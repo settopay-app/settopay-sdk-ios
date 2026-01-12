@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "SettoSDK",
     platforms: [
-        .iOS(.v13)
+        .iOS(.v14)
     ],
     products: [
         .library(
@@ -12,11 +12,9 @@ let package = Package(
             targets: ["SettoSDK"]
         )
     ],
-    dependencies: [],
     targets: [
         .target(
             name: "SettoSDK",
-            dependencies: [],
             path: "Sources/SettoSDK"
         )
     ]

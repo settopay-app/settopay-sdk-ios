@@ -2,172 +2,326 @@ import Foundation
 import SafariServices
 import UIKit
 
-/// Setto iOS SDK
-///
-/// SFSafariViewController를 사용하여 wallet.settopay.com과 연동합니다.
-///
-/// ## 사용 예시
-/// ```swift
-/// // 초기화
-/// SettoSDK.shared.initialize(
-///     merchantId: "merchant-123",
-///     environment: .production,
-///     returnScheme: "mygame"
-/// )
-///
-/// // 결제 요청
-/// SettoSDK.shared.openPayment(
-///     params: PaymentParams(orderId: "order-456", amount: 100.00)
-/// ) { result in
-///     switch result {
-///     case .success(let paymentResult):
-///         print("결제 성공: \(paymentResult.txId ?? "")")
-///     case .failure(let error):
-///         print("결제 실패: \(error)")
-///     }
-/// }
-/// ```
-public final class SettoSDK: NSObject {
-    /// 싱글톤 인스턴스
+// MARK: - Types
+
+public enum SettoEnvironment: String {
+    case dev = "dev"
+    case prod = "prod"
+
+    var baseURL: String {
+        switch self {
+        case .dev: return "https://dev-wallet.settopay.com"
+        case .prod: return "https://wallet.settopay.com"
+        }
+    }
+}
+
+public struct SettoConfig {
+    public let merchantId: String
+    public let environment: SettoEnvironment
+    public let idpToken: String?  // IdP 토큰 (있으면 자동로그인)
+    public let debug: Bool
+
+    public init(
+        merchantId: String,
+        environment: SettoEnvironment,
+        idpToken: String? = nil,
+        debug: Bool = false
+    ) {
+        self.merchantId = merchantId
+        self.environment = environment
+        self.idpToken = idpToken
+        self.debug = debug
+    }
+}
+
+public enum PaymentStatus: String {
+    case success
+    case failed
+    case cancelled
+}
+
+public struct PaymentResult {
+    public let status: PaymentStatus
+    public let paymentId: String?
+    public let txHash: String?
+    public let error: String?
+}
+
+public struct PaymentInfo: Decodable {
+    public let paymentId: String
+    public let status: String
+    public let amount: String
+    public let currency: String
+    public let txHash: String?
+    public let createdAt: Int64
+    public let completedAt: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case paymentId = "payment_id"
+        case status
+        case amount
+        case currency
+        case txHash = "tx_hash"
+        case createdAt = "created_at"
+        case completedAt = "completed_at"
+    }
+}
+
+// MARK: - SDK
+
+public final class SettoSDK {
+
     public static let shared = SettoSDK()
 
-    // MARK: - Private Properties
-
-    private var merchantId: String = ""
-    private var returnScheme: String = ""
-    private var environment: SettoEnvironment = .production
-
+    private var config: SettoConfig?
     private var safariVC: SFSafariViewController?
-    private var completionHandler: ((Result<PaymentResult, SettoError>) -> Void)?
+    private var completion: ((PaymentResult) -> Void)?
 
-    private override init() {
-        super.init()
-    }
+    private init() {}
 
     // MARK: - Public Methods
 
     /// SDK 초기화
+    ///
     /// - Parameters:
-    ///   - merchantId: 고객사 ID
-    ///   - environment: 환경 설정 (.development 또는 .production)
-    ///   - returnScheme: 결제 완료 후 돌아올 Custom URL Scheme (예: "mygame")
-    public func initialize(
-        merchantId: String,
-        environment: SettoEnvironment,
-        returnScheme: String
-    ) {
-        self.merchantId = merchantId
-        self.environment = environment
-        self.returnScheme = returnScheme
+    ///   - config.merchantId: 고객사 ID (필수)
+    ///   - config.environment: 환경 (dev | prod)
+    ///   - config.idpToken: IdP 토큰 (선택, 있으면 자동로그인)
+    ///   - config.debug: 디버그 로그 (선택)
+    public func initialize(config: SettoConfig) {
+        self.config = config
+        debugLog("Initialized with merchantId: \(config.merchantId)")
     }
 
-    /// 결제 창을 열고 결제를 진행합니다.
-    /// - Parameters:
-    ///   - params: 결제 파라미터
-    ///   - completion: 결제 완료 콜백
+    /// 결제 요청
+    ///
+    /// IdP Token 유무에 따라 자동로그인 여부가 결정됩니다.
+    /// - IdP Token 없음: Setto 로그인 필요
+    /// - IdP Token 있음: PaymentToken 발급 후 자동로그인
     public func openPayment(
-        params: PaymentParams,
-        completion: @escaping (Result<PaymentResult, SettoError>) -> Void
+        amount: String,
+        orderId: String? = nil,
+        from viewController: UIViewController,
+        completion: @escaping (PaymentResult) -> Void
     ) {
-        self.completionHandler = completion
-
-        // URL 생성
-        guard let url = buildPaymentURL(params: params) else {
-            completion(.failure(.invalidParams))
+        guard let config = config else {
+            completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: "SDK not initialized"))
             return
         }
 
-        // SFSafariViewController 생성
-        let config = SFSafariViewController.Configuration()
-        config.entersReaderIfAvailable = false
+        if let idpToken = config.idpToken {
+            // IdP Token 있음 → PaymentToken 발급 → Fragment로 전달
+            debugLog("Requesting PaymentToken...")
+            requestPaymentToken(
+                amount: amount,
+                orderId: orderId,
+                idpToken: idpToken,
+                config: config
+            ) { [weak self] result in
+                switch result {
+                case .success(let paymentToken):
+                    let encodedToken = paymentToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? paymentToken
+                    let urlString = "\(config.environment.baseURL)/pay/wallet#pt=\(encodedToken)"
+                    guard let url = URL(string: urlString) else {
+                        completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: "Invalid URL"))
+                        return
+                    }
+                    self?.debugLog("Opening payment with auto-login")
+                    self?.openSafariViewController(url: url, from: viewController, completion: completion)
 
-        safariVC = SFSafariViewController(url: url, configuration: config)
-        safariVC?.delegate = self
+                case .failure(let error):
+                    completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: error.localizedDescription))
+                }
+            }
+        } else {
+            // IdP Token 없음 → Query param으로 직접 전달
+            var urlComponents = URLComponents(string: "\(config.environment.baseURL)/pay/wallet")!
+            urlComponents.queryItems = [
+                URLQueryItem(name: "merchant_id", value: config.merchantId),
+                URLQueryItem(name: "amount", value: amount)
+            ]
+            if let orderId = orderId {
+                urlComponents.queryItems?.append(URLQueryItem(name: "order_id", value: orderId))
+            }
 
-        // 화면 표시
-        guard let topVC = Self.topViewController else {
-            completion(.failure(.presentationFailed))
-            return
+            guard let url = urlComponents.url else {
+                completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: "Invalid URL"))
+                return
+            }
+
+            debugLog("Opening payment with Setto login")
+            openSafariViewController(url: url, from: viewController, completion: completion)
         }
-
-        topVC.present(safariVC!, animated: true)
     }
 
-    /// Deep Link 처리
-    /// - Parameter url: Deep Link URL
-    /// - Returns: 처리 여부
-    @discardableResult
-    public func handleDeepLink(url: URL) -> Bool {
-        // Scheme 확인
-        guard url.scheme == returnScheme else {
+    /// 결제 상태 조회
+    public func getPaymentInfo(
+        paymentId: String,
+        completion: @escaping (Result<PaymentInfo, Error>) -> Void
+    ) {
+        guard let config = config else {
+            completion(.failure(NSError(domain: "SettoSDK", code: -1, userInfo: [NSLocalizedDescriptionKey: "SDK not initialized"])))
+            return
+        }
+
+        let urlString = "\(config.environment.baseURL)/api/external/payment/\(paymentId)"
+        guard let url = URL(string: urlString) else {
+            completion(.failure(NSError(domain: "SettoSDK", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue(config.merchantId, forHTTPHeaderField: "X-Merchant-ID")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+
+            guard let data = data else {
+                completion(.failure(NSError(domain: "SettoSDK", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
+                return
+            }
+
+            do {
+                let info = try JSONDecoder().decode(PaymentInfo.self, from: data)
+                completion(.success(info))
+            } catch {
+                completion(.failure(error))
+            }
+        }.resume()
+    }
+
+    /// URL Scheme 콜백 처리
+    /// AppDelegate 또는 SceneDelegate에서 호출
+    public func handleCallback(url: URL) -> Bool {
+        // setto-{merchantId}://callback?status=success&payment_id=xxx&tx_hash=xxx
+        guard url.scheme?.hasPrefix("setto-") == true,
+              url.host == "callback" else {
             return false
         }
 
-        // Safari 닫기
-        safariVC?.dismiss(animated: true)
-
-        // URL 파싱
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let queryItems = components?.queryItems ?? []
 
-        let status = queryItems.first { $0.name == "status" }?.value
-        let txId = queryItems.first { $0.name == "txId" }?.value
-        let paymentId = queryItems.first { $0.name == "paymentId" }?.value
-        let error = queryItems.first { $0.name == "error" }?.value
+        let statusString = queryItems.first(where: { $0.name == "status" })?.value ?? ""
+        let paymentId = queryItems.first(where: { $0.name == "payment_id" })?.value
+        let txHash = queryItems.first(where: { $0.name == "tx_hash" })?.value
+        let errorMsg = queryItems.first(where: { $0.name == "error" })?.value
 
-        // 결과 처리
-        switch status {
-        case "success":
-            let result = PaymentResult(status: .success, txId: txId, paymentId: paymentId)
-            completionHandler?(.success(result))
-
-        case "cancelled":
-            completionHandler?(.failure(.userCancelled))
-
-        default:
-            completionHandler?(.failure(SettoError.from(errorCode: error)))
+        let status: PaymentStatus
+        switch statusString {
+        case "success": status = .success
+        case "failed": status = .failed
+        default: status = .cancelled
         }
 
-        completionHandler = nil
+        let result = PaymentResult(
+            status: status,
+            paymentId: paymentId,
+            txHash: txHash,
+            error: errorMsg
+        )
+
+        dismissSafariViewController()
+        completion?(result)
+        completion = nil
+
+        debugLog("Callback received: \(statusString)")
         return true
+    }
+
+    /// 초기화 여부 확인
+    public var isInitialized: Bool {
+        return config != nil
     }
 
     // MARK: - Private Methods
 
-    private func buildPaymentURL(params: PaymentParams) -> URL? {
-        guard let encodedMerchantId = merchantId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let encodedOrderId = params.orderId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let encodedScheme = returnScheme.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
-        else {
-            return nil
+    private func requestPaymentToken(
+        amount: String,
+        orderId: String?,
+        idpToken: String,
+        config: SettoConfig,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        let urlString = "\(config.environment.baseURL)/api/external/payment/token"
+        guard let url = URL(string: urlString) else {
+            completion(.failure(NSError(domain: "SettoSDK", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
         }
 
-        var urlString = "\(environment.baseURL)/pay"
-        urlString += "?merchantId=\(encodedMerchantId)"
-        urlString += "&orderId=\(encodedOrderId)"
-        urlString += "&amount=\(params.amount)"
-        urlString += "&returnScheme=\(encodedScheme)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        if let currency = params.currency,
-           let encodedCurrency = currency.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            urlString += "&currency=\(encodedCurrency)"
+        var body: [String: Any] = [
+            "merchantId": config.merchantId,
+            "amount": amount,
+            "idpToken": idpToken
+        ]
+        if let orderId = orderId {
+            body["orderId"] = orderId
         }
 
-        return URL(string: urlString)
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    completion(.failure(error))
+                    return
+                }
+
+                guard let data = data else {
+                    completion(.failure(NSError(domain: "SettoSDK", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
+                    return
+                }
+
+                do {
+                    if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let paymentToken = json["paymentToken"] as? String {
+                        completion(.success(paymentToken))
+                    } else {
+                        completion(.failure(NSError(domain: "SettoSDK", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])))
+                    }
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+        }.resume()
     }
 
-    /// 최상위 ViewController 가져오기
-    private static var topViewController: UIViewController? {
-        let keyWindow = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap { $0.windows }
-            .first { $0.isKeyWindow }
+    private func openSafariViewController(
+        url: URL,
+        from viewController: UIViewController,
+        completion: @escaping (PaymentResult) -> Void
+    ) {
+        self.completion = completion
 
-        var top = keyWindow?.rootViewController
-        while let presented = top?.presentedViewController {
-            top = presented
-        }
-        return top
+        let safariVC = SFSafariViewController(url: url)
+        safariVC.delegate = self
+        safariVC.modalPresentationStyle = .pageSheet
+
+        self.safariVC = safariVC
+        viewController.present(safariVC, animated: true)
+    }
+
+    private func dismissSafariViewController() {
+        safariVC?.dismiss(animated: true)
+        safariVC = nil
+    }
+
+    private func debugLog(_ message: String) {
+        guard config?.debug == true else { return }
+        print("[SettoSDK] \(message)")
     }
 }
 
@@ -176,7 +330,10 @@ public final class SettoSDK: NSObject {
 extension SettoSDK: SFSafariViewControllerDelegate {
     public func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
         // 사용자가 Safari를 닫음 (취소)
-        completionHandler?(.failure(.userCancelled))
-        completionHandler = nil
+        let result = PaymentResult(status: .cancelled, paymentId: nil, txHash: nil, error: nil)
+        completion?(result)
+        completion = nil
+        safariVC = nil
+        debugLog("Safari closed by user")
     }
 }
