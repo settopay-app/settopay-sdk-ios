@@ -168,6 +168,15 @@ Deep Link를 처리합니다. SceneDelegate에서 호출합니다.
 | `.invalidParams` | 잘못된 파라미터 |
 | `.presentationFailed` | 화면 표시 실패 |
 
+## 인증 방식
+
+iOS SDK는 SFSafariViewController(시스템 브라우저)를 사용합니다:
+
+- **이미 Setto에 로그인된 경우**: Safari 세션이 공유되어 바로 결제 화면이 표시됩니다.
+- **로그인되지 않은 경우**: Setto 자체 OAuth 로그인 화면이 표시된 후 결제가 진행됩니다.
+
+> **참고**: Web/WebGL SDK와 달리 idpToken 파라미터가 필요 없습니다. 시스템 브라우저가 세션을 관리합니다.
+
 ## 보안 참고사항
 
 1. **결제 결과는 서버에서 검증 필수**: SDK에서 반환하는 결과는 UX 피드백용입니다. 실제 결제 완료 여부는 고객사 서버에서 Setto API를 통해 검증해야 합니다.
