@@ -18,16 +18,13 @@ public enum SettoEnvironment: String {
 
 public struct SettoConfig {
     public let environment: SettoEnvironment
-    public let idpToken: String?  // IdP 토큰 (있으면 자동로그인)
     public let debug: Bool
 
     public init(
         environment: SettoEnvironment,
-        idpToken: String? = nil,
         debug: Bool = false
     ) {
         self.environment = environment
-        self.idpToken = idpToken
         self.debug = debug
     }
 }
@@ -83,7 +80,6 @@ public final class SettoSDK {
     ///
     /// - Parameters:
     ///   - config.environment: 환경 (dev | prod)
-    ///   - config.idpToken: IdP 토큰 (선택, 있으면 자동로그인)
     ///   - config.debug: 디버그 로그 (선택)
     public func initialize(config: SettoConfig) {
         self.config = config
@@ -92,13 +88,20 @@ public final class SettoSDK {
 
     /// 결제 요청
     ///
-    /// IdP Token 유무에 따라 자동로그인 여부가 결정됩니다.
+    /// 항상 PaymentToken을 발급받아서 결제 페이지로 전달합니다.
     /// - IdP Token 없음: Setto 로그인 필요
-    /// - IdP Token 있음: PaymentToken 발급 후 자동로그인
+    /// - IdP Token 있음: 자동로그인
+    ///
+    /// - Parameters:
+    ///   - merchantId: 머천트 ID
+    ///   - amount: 결제 금액
+    ///   - idpToken: IdP 토큰 (선택, 있으면 자동로그인)
+    ///   - viewController: Safari를 표시할 뷰 컨트롤러
+    ///   - completion: 결제 결과 콜백
     public func openPayment(
         merchantId: String,
         amount: String,
-        orderId: String? = nil,
+        idpToken: String? = nil,
         from viewController: UIViewController,
         completion: @escaping (PaymentResult) -> Void
     ) {
@@ -107,49 +110,27 @@ public final class SettoSDK {
             return
         }
 
-        if let idpToken = config.idpToken {
-            // IdP Token 있음 → PaymentToken 발급 → Fragment로 전달
-            debugLog("Requesting PaymentToken...")
-            requestPaymentToken(
-                merchantId: merchantId,
-                amount: amount,
-                orderId: orderId,
-                idpToken: idpToken,
-                config: config
-            ) { [weak self] result in
-                switch result {
-                case .success(let paymentToken):
-                    let encodedToken = paymentToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? paymentToken
-                    let urlString = "\(config.environment.baseURL)/pay/wallet#pt=\(encodedToken)"
-                    guard let url = URL(string: urlString) else {
-                        completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: "Invalid URL"))
-                        return
-                    }
-                    self?.debugLog("Opening payment with auto-login")
-                    self?.openSafariViewController(url: url, from: viewController, completion: completion)
-
-                case .failure(let error):
-                    completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: error.localizedDescription))
+        debugLog("Requesting PaymentToken...")
+        requestPaymentToken(
+            merchantId: merchantId,
+            amount: amount,
+            idpToken: idpToken,
+            config: config
+        ) { [weak self] result in
+            switch result {
+            case .success(let paymentToken):
+                let encodedToken = paymentToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? paymentToken
+                let urlString = "\(config.environment.baseURL)/pay/wallet#pt=\(encodedToken)"
+                guard let url = URL(string: urlString) else {
+                    completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: "Invalid URL"))
+                    return
                 }
-            }
-        } else {
-            // IdP Token 없음 → Query param으로 직접 전달
-            var urlComponents = URLComponents(string: "\(config.environment.baseURL)/pay/wallet")!
-            urlComponents.queryItems = [
-                URLQueryItem(name: "merchant_id", value: merchantId),
-                URLQueryItem(name: "amount", value: amount)
-            ]
-            if let orderId = orderId {
-                urlComponents.queryItems?.append(URLQueryItem(name: "order_id", value: orderId))
-            }
+                self?.debugLog("Opening payment page")
+                self?.openSafariViewController(url: url, from: viewController, completion: completion)
 
-            guard let url = urlComponents.url else {
-                completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: "Invalid URL"))
-                return
+            case .failure(let error):
+                completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: error.localizedDescription))
             }
-
-            debugLog("Opening payment with Setto login")
-            openSafariViewController(url: url, from: viewController, completion: completion)
         }
     }
 
@@ -242,8 +223,7 @@ public final class SettoSDK {
     private func requestPaymentToken(
         merchantId: String,
         amount: String,
-        orderId: String?,
-        idpToken: String,
+        idpToken: String?,
         config: SettoConfig,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
@@ -259,11 +239,10 @@ public final class SettoSDK {
 
         var body: [String: Any] = [
             "merchant_id": merchantId,
-            "amount": amount,
-            "idp_token": idpToken
+            "amount": amount
         ]
-        if let orderId = orderId {
-            body["order_id"] = orderId
+        if let idpToken = idpToken {
+            body["idp_token"] = idpToken
         }
 
         do {
