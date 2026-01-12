@@ -17,18 +17,15 @@ public enum SettoEnvironment: String {
 }
 
 public struct SettoConfig {
-    public let merchantId: String
     public let environment: SettoEnvironment
     public let idpToken: String?  // IdP 토큰 (있으면 자동로그인)
     public let debug: Bool
 
     public init(
-        merchantId: String,
         environment: SettoEnvironment,
         idpToken: String? = nil,
         debug: Bool = false
     ) {
-        self.merchantId = merchantId
         self.environment = environment
         self.idpToken = idpToken
         self.debug = debug
@@ -85,13 +82,12 @@ public final class SettoSDK {
     /// SDK 초기화
     ///
     /// - Parameters:
-    ///   - config.merchantId: 고객사 ID (필수)
     ///   - config.environment: 환경 (dev | prod)
     ///   - config.idpToken: IdP 토큰 (선택, 있으면 자동로그인)
     ///   - config.debug: 디버그 로그 (선택)
     public func initialize(config: SettoConfig) {
         self.config = config
-        debugLog("Initialized with merchantId: \(config.merchantId)")
+        debugLog("Initialized with environment: \(config.environment)")
     }
 
     /// 결제 요청
@@ -100,6 +96,7 @@ public final class SettoSDK {
     /// - IdP Token 없음: Setto 로그인 필요
     /// - IdP Token 있음: PaymentToken 발급 후 자동로그인
     public func openPayment(
+        merchantId: String,
         amount: String,
         orderId: String? = nil,
         from viewController: UIViewController,
@@ -114,6 +111,7 @@ public final class SettoSDK {
             // IdP Token 있음 → PaymentToken 발급 → Fragment로 전달
             debugLog("Requesting PaymentToken...")
             requestPaymentToken(
+                merchantId: merchantId,
                 amount: amount,
                 orderId: orderId,
                 idpToken: idpToken,
@@ -138,7 +136,7 @@ public final class SettoSDK {
             // IdP Token 없음 → Query param으로 직접 전달
             var urlComponents = URLComponents(string: "\(config.environment.baseURL)/pay/wallet")!
             urlComponents.queryItems = [
-                URLQueryItem(name: "merchant_id", value: config.merchantId),
+                URLQueryItem(name: "merchant_id", value: merchantId),
                 URLQueryItem(name: "amount", value: amount)
             ]
             if let orderId = orderId {
@@ -157,6 +155,7 @@ public final class SettoSDK {
 
     /// 결제 상태 조회
     public func getPaymentInfo(
+        merchantId: String,
         paymentId: String,
         completion: @escaping (Result<PaymentInfo, Error>) -> Void
     ) {
@@ -172,7 +171,7 @@ public final class SettoSDK {
         }
 
         var request = URLRequest(url: url)
-        request.setValue(config.merchantId, forHTTPHeaderField: "X-Merchant-ID")
+        request.setValue(merchantId, forHTTPHeaderField: "X-Merchant-ID")
 
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
@@ -241,6 +240,7 @@ public final class SettoSDK {
     // MARK: - Private Methods
 
     private func requestPaymentToken(
+        merchantId: String,
         amount: String,
         orderId: String?,
         idpToken: String,
@@ -258,12 +258,12 @@ public final class SettoSDK {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         var body: [String: Any] = [
-            "merchantId": config.merchantId,
+            "merchant_id": merchantId,
             "amount": amount,
-            "idpToken": idpToken
+            "idp_token": idpToken
         ]
         if let orderId = orderId {
-            body["orderId"] = orderId
+            body["order_id"] = orderId
         }
 
         do {
@@ -287,7 +287,7 @@ public final class SettoSDK {
 
                 do {
                     if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let paymentToken = json["paymentToken"] as? String {
+                       let paymentToken = json["payment_token"] as? String {
                         completion(.success(paymentToken))
                     } else {
                         completion(.failure(NSError(domain: "SettoSDK", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])))
