@@ -39,6 +39,16 @@ public struct PaymentResult {
     public let status: PaymentStatus
     public let paymentId: String?
     public let txHash: String?
+    /// 결제자 지갑 주소 (서버에서 반환)
+    public let fromAddress: String?
+    /// 결산 수신자 주소 (pool이 아닌 최종 수신자, 서버에서 반환)
+    public let toAddress: String?
+    /// 결제 금액 (USD, 예: "10.00", 서버에서 반환)
+    public let amount: String?
+    /// 체인 ID (예: 8453, 56, 900001, 서버에서 반환)
+    public let chainId: Int?
+    /// 토큰 심볼 (예: "USDC", "USDT", 서버에서 반환)
+    public let tokenSymbol: String?
     public let error: String?
 }
 
@@ -106,7 +116,7 @@ public final class SettoSDK {
         completion: @escaping (PaymentResult) -> Void
     ) {
         guard let config = config else {
-            completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: "SDK not initialized"))
+            completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, fromAddress: nil, toAddress: nil, amount: nil, chainId: nil, tokenSymbol: nil, error: "SDK not initialized"))
             return
         }
 
@@ -122,14 +132,14 @@ public final class SettoSDK {
                 let encodedToken = paymentToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? paymentToken
                 let urlString = "\(config.environment.baseURL)/pay/wallet#pt=\(encodedToken)"
                 guard let url = URL(string: urlString) else {
-                    completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: "Invalid URL"))
+                    completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, fromAddress: nil, toAddress: nil, amount: nil, chainId: nil, tokenSymbol: nil, error: "Invalid URL"))
                     return
                 }
                 self?.debugLog("Opening payment page")
                 self?.openSafariViewController(url: url, from: viewController, completion: completion)
 
             case .failure(let error):
-                completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, error: error.localizedDescription))
+                completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, fromAddress: nil, toAddress: nil, amount: nil, chainId: nil, tokenSymbol: nil, error: error.localizedDescription))
             }
         }
     }
@@ -189,6 +199,12 @@ public final class SettoSDK {
         let statusString = queryItems.first(where: { $0.name == "status" })?.value ?? ""
         let paymentId = queryItems.first(where: { $0.name == "payment_id" })?.value
         let txHash = queryItems.first(where: { $0.name == "tx_hash" })?.value
+        let fromAddress = queryItems.first(where: { $0.name == "from_address" })?.value
+        let toAddress = queryItems.first(where: { $0.name == "to_address" })?.value
+        let amount = queryItems.first(where: { $0.name == "amount" })?.value
+        let chainIdStr = queryItems.first(where: { $0.name == "chain_id" })?.value
+        let chainId = chainIdStr != nil ? Int(chainIdStr!) : nil
+        let tokenSymbol = queryItems.first(where: { $0.name == "token_symbol" })?.value
         let errorMsg = queryItems.first(where: { $0.name == "error" })?.value
 
         let status: PaymentStatus
@@ -202,6 +218,11 @@ public final class SettoSDK {
             status: status,
             paymentId: paymentId,
             txHash: txHash,
+            fromAddress: fromAddress,
+            toAddress: toAddress,
+            amount: amount,
+            chainId: chainId,
+            tokenSymbol: tokenSymbol,
             error: errorMsg
         )
 
@@ -309,7 +330,7 @@ public final class SettoSDK {
 extension SettoSDK: SFSafariViewControllerDelegate {
     public func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
         // 사용자가 Safari를 닫음 (취소)
-        let result = PaymentResult(status: .cancelled, paymentId: nil, txHash: nil, error: nil)
+        let result = PaymentResult(status: .cancelled, paymentId: nil, txHash: nil, fromAddress: nil, toAddress: nil, amount: nil, chainId: nil, tokenSymbol: nil, error: nil)
         completion?(result)
         completion = nil
         safariVC = nil
