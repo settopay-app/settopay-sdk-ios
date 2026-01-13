@@ -8,10 +8,19 @@ public enum SettoEnvironment: String {
     case dev = "dev"
     case prod = "prod"
 
-    var baseURL: String {
+    /// API 서버 (백엔드 gRPC-Gateway)
+    var apiURL: String {
         switch self {
         case .dev: return "https://dev-wallet.settopay.com"
         case .prod: return "https://wallet.settopay.com"
+        }
+    }
+
+    /// 웹앱 (프론트엔드 결제 페이지)
+    var webAppURL: String {
+        switch self {
+        case .dev: return "https://dev-app.settopay.com"
+        case .prod: return "https://app.settopay.com"
         }
     }
 }
@@ -130,7 +139,7 @@ public final class SettoSDK {
             switch result {
             case .success(let paymentToken):
                 let encodedToken = paymentToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? paymentToken
-                let urlString = "\(config.environment.baseURL)/pay/wallet#pt=\(encodedToken)"
+                let urlString = "\(config.environment.webAppURL)/pay/wallet#pt=\(encodedToken)"
                 guard let url = URL(string: urlString) else {
                     completion(PaymentResult(status: .failed, paymentId: nil, txHash: nil, fromAddress: nil, toAddress: nil, amount: nil, chainId: nil, tokenSymbol: nil, error: "Invalid URL"))
                     return
@@ -155,7 +164,7 @@ public final class SettoSDK {
             return
         }
 
-        let urlString = "\(config.environment.baseURL)/api/external/payment/\(paymentId)"
+        let urlString = "\(config.environment.apiURL)/api/external/payment/\(paymentId)"
         guard let url = URL(string: urlString) else {
             completion(.failure(NSError(domain: "SettoSDK", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
             return
@@ -248,7 +257,7 @@ public final class SettoSDK {
         config: SettoConfig,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
-        let urlString = "\(config.environment.baseURL)/api/external/payment/token"
+        let urlString = "\(config.environment.apiURL)/api/external/payment/token"
         guard let url = URL(string: urlString) else {
             completion(.failure(NSError(domain: "SettoSDK", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
             return
